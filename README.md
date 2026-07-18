@@ -2,6 +2,7 @@
 
 **Problem Statement:** Cross-Modal Satellite Image Retrieval Using Multi-Sensor Remote Sensing Data
 
+
 📌 **Description**
 Satellite remote sensing systems acquire Earth observation data using different sensors such as optical, multispectral, and Synthetic Aperture Radar (SAR). Each sensor captures different physical characteristics of the Earth's surface. Optical images provide rich visual and spectral information, while SAR images provide structural information and can operate under cloud cover and nighttime conditions.
 
@@ -9,12 +10,14 @@ With the rapid growth of satellite image archives, content-based retrieval of re
 
 The core of our solution is Antariksh-JEPA, which synthesizes the X-JEPA paradigm and Hirschfeld-Gebelein-Rényi Maximal Correlation (HGRMC) to tackle the inherent Modality Gap and Semantic Abstraction Gap. To ensure ultra-fast retrieval times required by ISRO, we employ Explicit Semantic Preserving Deep Hashing.
 
+
 **🎯 Objectives Achieved**
 Same-modal retrieval: Optical-to-Optical, SAR-to-SAR.
 Cross-modal retrieval: Optical-to-SAR, SAR-to-Optical.
 Ranking: Outputting the top-5 and top-10 most relevant images for each query.
 Speed: O(1) average retrieval time via binary hashing and bitwise XOR operations (FAISS).
 Noise Immunity: Resilient against SAR speckle and Optical cloud cover via latent space predictive alignment.
+
 
 **🚀 Quick Start Guide**
 **1\. Prerequisites**
@@ -39,6 +42,7 @@ Launch the interactive geospatial retrieval dashboard using Streamlit:
 cd Web\_app
 streamlit run app.py
 
+
 **🧠 Methodology \& Architecture**
 Our architecture bridges the modality gap without relying on inefficient pixel-level reconstruction.
 
@@ -61,6 +65,7 @@ Georeferenced Domain Adaptation: Leverages coordinates (Label-Deficit ZSL) to al
 
 *4.Semantic Preserving Deep Hashing: Converts the 192-D continuous real-valued vectors into compact binary hash codes using a tanh layer, solving the computational bottleneck for massive EO archives. (Ref: Multisensor Fusion and Explicit Semantic Preserving Deep Hashing)]*
 
+
 **📊 Evaluation \& Results**
 
 The evaluation criteria mandate high F1-scores and low retrieval times. Our framework utilizes the Asymmetric Shared Space logic:
@@ -73,64 +78,31 @@ This ensures accurate distance calculations across all modes.
 **📁 Repository Structure**
 
 ISRO/
-
 │
-
 ├── Web\_app/
-
 │   └── app.py                        # Streamlit UI \& Retrieval Logic (Downloads HF assets automatically)
-
 │
-
 ├── notebooks/
-
 │   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \& Visualization Notebook
-
 │   ├── build\_faiss.ipynb             # Script to build binary FAISS indices
-
 │   ├── evaluate.ipynb                # Evaluation metrics calculation
-
 │   ├── train.ipynb                   # Main training loop
-
 │   ├── losses.ipynb                  # Custom HGRMC \& PSA Loss definitions
-
 │   ├── predictor.ipynb               # Cross-Attentional Predictor architecture
-
 │   ├── x-jepa\_model.ipynb            # ViT Encoder definitions
-
 │   └── Pytorch\_dataset\_class.ipynb   # BEN-14K DataLoader
-
 │
-
 ├── research\_papers/                  # Foundational literature (X-JEPA, Deep Hashing, etc.)
-
 │
-
 ├── assets/                           # Images for README and presentations
-
 │
-
 ├── gallery\_metadata.pkl              # Pre-computed metadata for the gallery
-
 ├── optical\_gallery\_192bit.index      # FAISS Index for Optical Gallery
-
 ├── sar\_gallery\_192bit.index          # FAISS Index for SAR Gallery
-
 ├── requirements.txt                  # Python dependencies
-
 └── .gitignore                        # Excludes large files and weights
 
 
-
-
-
-🤝 Team
-
-
-
+**🤝 Team**
 GeoOperations Explorer
-
-
-
 Built for the Bharatiya Antariksh Hackathon 2026.
-
