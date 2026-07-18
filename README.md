@@ -79,26 +79,26 @@ This ensures accurate distance calculations across all modes.
 
 ISRO/
 │
-├── Web\_app/
-│   └── app.py                        # Streamlit UI \& Retrieval Logic (Downloads HF assets automatically)
+├── Web_app/
+│   └── app.py                        # Streamlit UI & Retrieval Logic (Downloads HF assets automatically)
 │
 ├── notebooks/
-│   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \& Visualization Notebook
-│   ├── build\_faiss.ipynb             # Script to build binary FAISS indices
+│   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation & Visualization Notebook
+│   ├── build_faiss.ipynb             # Script to build binary FAISS indices
 │   ├── evaluate.ipynb                # Evaluation metrics calculation
 │   ├── train.ipynb                   # Main training loop
-│   ├── losses.ipynb                  # Custom HGRMC \& PSA Loss definitions
+│   ├── losses.ipynb                  # Custom HGRMC & PSA Loss definitions
 │   ├── predictor.ipynb               # Cross-Attentional Predictor architecture
-│   ├── x-jepa\_model.ipynb            # ViT Encoder definitions
-│   └── Pytorch\_dataset\_class.ipynb   # BEN-14K DataLoader
+│   ├── x-jepa_model.ipynb            # ViT Encoder definitions
+│   └── Pytorch_dataset_class.ipynb   # BEN-14K DataLoader
 │
-├── research\_papers/                  # Foundational literature (X-JEPA, Deep Hashing, etc.)
+├── research_papers/                  # Foundational literature (X-JEPA, Deep Hashing, etc.)
 │
 ├── assets/                           # Images for README and presentations
 │
-├── gallery\_metadata.pkl              # Pre-computed metadata for the gallery
-├── optical\_gallery\_192bit.index      # FAISS Index for Optical Gallery
-├── sar\_gallery\_192bit.index          # FAISS Index for SAR Gallery
+├── gallery_metadata.pkl              # Pre-computed metadata for the gallery
+├── optical_gallery_192bit.index      # FAISS Index for Optical Gallery
+├── sar_gallery_192bit.index          # FAISS Index for SAR Gallery
 ├── requirements.txt                  # Python dependencies
 └── .gitignore                        # Excludes large files and weights
 
