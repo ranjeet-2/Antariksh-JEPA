@@ -1,0 +1,25 @@
+# ====================================================
+# 1. Datasets and Large Files (Hosted on Hugging Face)
+# ====================================================
+archive/
+BigEarthNet_14K.zip
+temp_upload.tif
+
+# ===================================================
+# 2. Model Weights (Hosted on Hugging Face)
+# ===================================================
+saved_models/
+
+# ==================================================
+# 3. Jupyter Checkpoints
+# ==================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# =================================================
+# 4. Python Caches and Environments
+# =================================================
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/

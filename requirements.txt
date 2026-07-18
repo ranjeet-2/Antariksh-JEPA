@@ -1,0 +1,12 @@
+torch
+torchvision
+numpy
+pandas
+faiss-cpu
+rasterio
+streamlit
+matplotlib
+timm
+folium
+streamlit-folium
+huggingface_hub
