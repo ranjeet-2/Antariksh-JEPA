@@ -17,13 +17,36 @@ from huggingface_hub import hf_hub_download
 import zipfile
 
 # ==========================================
-# 0. HUGGING FACE DOWNLOADER LOGIC
+# 0. HUGGING FACE DOWNLOADER & PATH FINDER
 # ==========================================
+def find_dataset_paths(base_dir):
+    """
+    Recursively finds the actual locations of metadata.parquet and image folders.
+    This prevents path errors regardless of how the zip was extracted.
+    """
+    parquet_path = None
+    s1_folder_base = None
+    s2_folder_base = None
+    
+    for root, dirs, files in os.walk(base_dir):
+        # Skip hidden environments to speed up the search
+        dirs[:] = [d for d in dirs if d not in ['.git', '.conda', 'venv', 'env', '__pycache__']]
+        
+        if 'metadata.parquet' in files and parquet_path is None:
+            parquet_path = os.path.join(root, 'metadata.parquet')
+            
+        if 'BigEarthNet-S1' in dirs and s1_folder_base is None:
+            s1_folder_base = os.path.join(root, 'BigEarthNet-S1')
+            
+        if 'BigEarthNet-S2' in dirs and s2_folder_base is None:
+            s2_folder_base = os.path.join(root, 'BigEarthNet-S2')
+            
+        if parquet_path and s1_folder_base and s2_folder_base:
+            break
+            
+    return parquet_path, s1_folder_base, s2_folder_base
+
 def download_hf_assets():
-    """
-    Downloads the model weights, metadata parquet, and extracts the dataset zip
-    from Hugging Face if they don't already exist locally.
-    """
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     # 1. Download Model Weights
@@ -32,7 +55,6 @@ def download_hf_assets():
     if not os.path.exists(model_path):
         st.sidebar.info("Downloading model weights from Hugging Face... This may take a moment.")
         os.makedirs(model_dir, exist_ok=True)
-        # Download from your HF Model Repo
         downloaded_model = hf_hub_download(
             repo_id="ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model", 
             filename="saved_models/antariksh_best_model.pth"
@@ -41,28 +63,11 @@ def download_hf_assets():
         shutil.copy(downloaded_model, model_path)
         st.sidebar.success("Model weights downloaded!")
 
-    # Update: New folder structure based on ZIP extraction
-    archive_dir = os.path.join(base_dir, "archive", "BigEarthNet_14K", "BEN_14k")
+    # 2. Check for extracted dataset using robust finder
+    parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
     
-    # 2. Download Metadata Parquet
-    parquet_path = os.path.join(archive_dir, "metadata.parquet")
-    if not os.path.exists(parquet_path):
-        st.sidebar.info("Downloading metadata.parquet from Hugging Face...")
-        os.makedirs(archive_dir, exist_ok=True)
-        downloaded_parquet = hf_hub_download(
-            repo_id="ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2", 
-            filename="metadata.parquet",
-            repo_type="dataset"
-        )
-        import shutil
-        shutil.copy(downloaded_parquet, parquet_path)
-        st.sidebar.success("Metadata downloaded!")
-
-    # 3. Check for Dataset Zip Extraction
-    zip_path = os.path.join(base_dir, "archive", "BigEarthNet_14K.zip")
-    s1_train_path = os.path.join(archive_dir, "BigEarthNet-S1", "train")
-    
-    if not os.path.exists(s1_train_path):
+    if not s1_base or not os.path.exists(os.path.join(s1_base, "train")):
+        zip_path = os.path.join(base_dir, "BigEarthNet_14K.zip")
         if not os.path.exists(zip_path):
             st.sidebar.warning("Dataset not found locally. Downloading 3.1GB zip from Hugging Face...")
             os.makedirs(os.path.dirname(zip_path), exist_ok=True)
@@ -77,23 +82,45 @@ def download_hf_assets():
             
         st.sidebar.info("Extracting BigEarthNet_14K.zip... Please wait.")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Extracts into base_dir/archive. 
-            # The zip already contains the BigEarthNet_14K/BEN_14k/... structure
-            zip_ref.extractall(os.path.join(base_dir, "archive"))
+            zip_ref.extractall(base_dir)
         st.sidebar.success("Dataset extracted successfully!")
+        
+        # Update paths after extraction
+        parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
+
+    # 3. If parquet is STILL missing, download it individually
+    if not parquet_path:
+        st.sidebar.info("Downloading metadata.parquet from Hugging Face...")
+        archive_dir = os.path.join(base_dir, "BigEarthNet_14K", "BEN_14k")
+        os.makedirs(archive_dir, exist_ok=True)
+        parquet_path = os.path.join(archive_dir, "metadata.parquet")
+        
+        downloaded_parquet = hf_hub_download(
+            repo_id="ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2", 
+            filename="metadata.parquet",
+            repo_type="dataset"
+        )
+        import shutil
+        shutil.copy(downloaded_parquet, parquet_path)
+        st.sidebar.success("Metadata downloaded!")
 
 # ==========================================
 # 1. CORE CLASSES (With Labels)
 # ==========================================
 class BEN14KDataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir, parquet_file, split='train'):
-        self.data_dir = data_dir
+    def __init__(self, s1_folder_base, s2_folder_base, parquet_file, split='test'):
         self.split = split
         df = pd.read_parquet(parquet_file)
-        df = df[df['split'] == split]
         
-        s1_folder = os.path.join(data_dir, 'BigEarthNet-S1', split)
-        s2_folder = os.path.join(data_dir, 'BigEarthNet-S2', split)
+        # Robust split check
+        if 'split' in df.columns:
+            df_split = df[df['split'].str.lower() == split.lower()]
+            if df_split.empty and split == 'validation':
+                df_split = df[df['split'].str.lower() == 'val']
+            df = df_split
+            
+        s1_folder = os.path.join(s1_folder_base, split)
+        s2_folder = os.path.join(s2_folder_base, split)
         
         self.valid_pairs = []
         self.patch_ids = []
@@ -105,17 +132,23 @@ class BEN14KDataset(torch.utils.data.Dataset):
             s2_name = row.get('s2v1_name', '')
             img_labels = row.get('labels', [])
             
+            # Find S2 Path
             s2_path = None
             if os.path.exists(os.path.join(s2_folder, f"{patch_id}.tif")):
                 s2_path = os.path.join(s2_folder, f"{patch_id}.tif")
             elif os.path.exists(os.path.join(s2_folder, f"{s2_name}.tif")):
                 s2_path = os.path.join(s2_folder, f"{s2_name}.tif")
+            elif os.path.exists(os.path.join(s2_folder_base, f"{patch_id}.tif")):
+                s2_path = os.path.join(s2_folder_base, f"{patch_id}.tif")
                 
+            # Find S1 Path
             s1_path = None
             if os.path.exists(os.path.join(s1_folder, f"{patch_id}.tif")):
                 s1_path = os.path.join(s1_folder, f"{patch_id}.tif")
             elif os.path.exists(os.path.join(s1_folder, f"{s1_name}.tif")):
                 s1_path = os.path.join(s1_folder, f"{s1_name}.tif")
+            elif os.path.exists(os.path.join(s1_folder_base, f"{patch_id}.tif")):
+                s1_path = os.path.join(s1_folder_base, f"{patch_id}.tif")
                 
             if s1_path and s2_path:
                 self.valid_pairs.append((s1_path, s2_path))
@@ -130,6 +163,9 @@ class BEN14KDataset(torch.utils.data.Dataset):
             return src.read()
 
     def __getitem__(self, idx):
+        if idx >= len(self.valid_pairs) or idx < 0:
+            raise IndexError(f"Dataset only has {len(self.valid_pairs)} valid image pairs, but index {idx} was requested.")
+            
         s1_path, s2_path = self.valid_pairs[idx]
         s1_img = self.read_tif(s1_path)
         s2_img = self.read_tif(s2_path)
@@ -220,13 +256,6 @@ def get_lat_lon_from_metadata(patch_id, full_df):
                 return (base_lat + lat_offset, base_lon + lon_offset)
     return None
 
-@st.cache_data
-def load_full_parquet():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # Updated path to match zip extraction structure
-    parquet_file = os.path.join(base_dir, "archive", "BigEarthNet_14K", "BEN_14k", "metadata.parquet")
-    return pd.read_parquet(parquet_file)
-
 @st.cache_resource
 def load_system():
     # Trigger HF downloads if needed before loading
@@ -252,14 +281,16 @@ def load_system():
     meta_path = os.path.join(base_dir, "gallery_metadata.pkl")
     gallery_meta = pd.read_pickle(meta_path)
     
-    # Updated path to match zip extraction structure
-    DATA_DIR = os.path.join(base_dir, "archive", "BigEarthNet_14K", "BEN_14k")
-    PARQUET_FILE = os.path.join(DATA_DIR, "metadata.parquet")
+    # Use robust path finder
+    parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
     
-    test_dataset = BEN14KDataset(DATA_DIR, PARQUET_FILE, split='test')
-    val_dataset = BEN14KDataset(DATA_DIR, PARQUET_FILE, split='validation')
+    if not parquet_path or not s1_base or not s2_base:
+        raise FileNotFoundError("Could not locate the dataset folders or metadata.parquet after extraction. Please check your folder structure.")
     
-    return encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device
+    test_dataset = BEN14KDataset(s1_base, s2_base, parquet_path, split='test')
+    val_dataset = BEN14KDataset(s1_base, s2_base, parquet_path, split='validation')
+    
+    return encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device, parquet_path
 
 # ==========================================
 # 3. STREAMLIT FRONTEND
@@ -269,8 +300,8 @@ st.title("🛰️ Antariksh-JEPA: Universal Satellite Image Retrieval")
 st.markdown("**ISRO Hackathon 2026** | Hashing, Semantic Labels & Geospatial Mapping")
 
 try:
-    encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device = load_system()
-    full_parquet_df = load_full_parquet()
+    encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device, parquet_path = load_system()
+    full_parquet_df = pd.read_parquet(parquet_path)
     st.sidebar.success("All Modalities & Metadata Loaded!")
 except Exception as e:
     st.error(f"Error loading models. Run from the main folder. Details: {e}")
@@ -297,13 +328,21 @@ query_labels = "Unknown (Custom Upload)"
 query_geo_coords = None
 
 if input_method == "Use Test Dataset (ISRO Eval)":
-    query_idx = st.sidebar.slider("Select Query Image (Index)", 0, len(test_dataset)-1, 42)
+    
+    dataset_len = len(test_dataset)
+    if dataset_len == 0:
+        st.error("🚨 Critical Error: The Test Dataset loaded 0 valid image pairs. Please ensure the dataset folders exist and match the parquet file metadata.")
+        st.stop()
+        
+    query_idx = st.sidebar.slider("Select Query Image (Index)", 0, dataset_len-1, min(42, dataset_len-1))
+    
     if st.sidebar.button("Run Retrieval"):
         query_s1_tensor, query_s2_tensor = test_dataset[query_idx]
         query_patch_id = test_dataset.patch_ids[query_idx]
         query_labels = ", ".join(test_dataset.labels[query_idx])
         
-        s1_path_actual = os.path.join(test_dataset.data_dir, 'BigEarthNet-S1', 'test', f"{query_patch_id}.tif")
+        # Pull path directly from valid pairs!
+        s1_path_actual = test_dataset.valid_pairs[query_idx][0]
         query_geo_coords = get_lat_lon_from_tif(s1_path_actual)
         
         if query_geo_coords is None:
@@ -413,28 +452,33 @@ if st.session_state.search_results is not None:
         
         matched_patch_id = gallery_meta.iloc[match_idx]['patch_id']
         matched_labels = ", ".join(gallery_meta.iloc[match_idx]['labels'])
-        s1_tensor_match, s2_tensor_match = val_dataset[match_idx]
         
-        match_path_actual = os.path.join(val_dataset.data_dir, 'BigEarthNet-S1', 'validation', f"{matched_patch_id}.tif")
-        coords = get_lat_lon_from_tif(match_path_actual)
-        
-        if coords is None:
-            coords = get_lat_lon_from_metadata(matched_patch_id, full_parquet_df)
+        if match_idx < len(val_dataset):
+            s1_tensor_match, s2_tensor_match = val_dataset[match_idx]
+            match_path_actual = val_dataset.valid_pairs[match_idx][0] # Safely pull direct path
             
-        if coords:
-            retrieved_map_data.append((coords, matched_patch_id, i+1))
+            coords = get_lat_lon_from_tif(match_path_actual)
             
-        with cols[i]:
-            fig, ax = plt.subplots(figsize=(3,3))
-            if res['target_type'] == "SAR":
-                ax.imshow(plot_sar(s1_tensor_match), cmap='gray')
-            else:
-                ax.imshow(plot_optical(s2_tensor_match))
+            if coords is None:
+                coords = get_lat_lon_from_metadata(matched_patch_id, full_parquet_df)
                 
-            ax.axis('off')
-            st.pyplot(fig)
-            st.markdown(f"**Rank {i+1}** | Dist: {dist}")
-            st.caption(f"**Labels:** {matched_labels}")
+            if coords:
+                retrieved_map_data.append((coords, matched_patch_id, i+1))
+                
+            with cols[i]:
+                fig, ax = plt.subplots(figsize=(3,3))
+                if res['target_type'] == "SAR":
+                    ax.imshow(plot_sar(s1_tensor_match), cmap='gray')
+                else:
+                    ax.imshow(plot_optical(s2_tensor_match))
+                    
+                ax.axis('off')
+                st.pyplot(fig)
+                st.markdown(f"**Rank {i+1}** | Dist: {dist}")
+                st.caption(f"**Labels:** {matched_labels}")
+        else:
+             with cols[i]:
+                 st.error(f"Image match {match_idx} out of bounds.")
 
     # --- GEOSPATIAL MAP RENDERING ---
     st.markdown("---")
