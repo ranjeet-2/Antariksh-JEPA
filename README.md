@@ -75,7 +75,15 @@ This ensures accurate distance calculations across all modes.
 (The training convergence graph demonstrates the stability of the HGRMC augmented loss over 100 epochs).
 
 
+<<<<<<< HEAD
 **📁 Repository Structure**
+=======
+
+📁 Repository Structure
+
+
+```text
+>>>>>>> e7bf0df (Fixed repository structure formatting in README)
 
 ISRO/
 │
