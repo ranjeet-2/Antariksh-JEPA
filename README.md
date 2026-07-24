@@ -104,9 +104,9 @@ Due to size constraints, the dataset and model weights are hosted on Hugging Fac
 
 * **Manual Setup:**
 
-  * **Dataset:** Download `BigEarthNet\_14K.zip` from [this Hugging Face link](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/BigEarthNet_14K.zip) and place it in the `archive/` directory.
-  * **Metadata:** Download `metadata.parquet` from [here](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/metadata.parquet) and place it in the `archive/BEN\_14k/` folder.
-  * **Model**: Download `antariksh\_best\_model.pth` from [this Hugging Face link](https://huggingface.co/ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model/resolve/main/saved_models/antariksh_best_model.pth) and place it in the `saved\_models/` folder.
+  * **Dataset:** Download `BigEarthNet_14K.zip` from [this Hugging Face link](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/BigEarthNet_14K.zip) and place it in the `archive/` directory.
+  * **Metadata:** Download `metadata.parquet` from [here](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/metadata.parquet) and place it in the `archive/BEN_14k/` folder.
+  * **Model**: Download `antariksh_best_model.pth` from [this Hugging Face link](https://huggingface.co/ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model/resolve/main/saved_models/antariksh_best_model.pth) and place it in the `saved_models/` folder.
 
 
 
@@ -121,7 +121,7 @@ Launch the interactive geospatial retrieval dashboard using Streamlit:
 
 
 ```bash
-streamlit run Web\_app\\app.py
+streamlit run Web_app\app.py
 
 ```
 
@@ -153,7 +153,7 @@ Our architecture bridges the modality gap without relying on inefficient pixel-l
 
 
 
-*(For detailed scientific foundations, refer to the papers in the `research\\\_papers/` directory).*
+*(For detailed scientific foundations, refer to the papers in the `research_papers/` directory).*
 
 
 
@@ -208,22 +208,22 @@ This ensures accurate distance calculations across all modes.
 ```text
 ISRO/
 
-├── Web\\\_app/
+├── Web_app/
 │   └── app.py                        # Streamlit UI \& Retrieval Logic (Downloads HF assets automatically)
 ├── notebooks/
 │   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \& Visualization Notebook
-│   ├── build\_faiss.ipynb             # Script to build binary FAISS indices
+│   ├── build_faiss.ipynb             # Script to build binary FAISS indices
 │   ├── evaluate.ipynb                # Evaluation metrics calculation
 │   ├── train.ipynb                   # Main training loop
 │   ├── losses.ipynb                  # Custom HGRMC \& PSA Loss definitions
 │   ├── predictor.ipynb               # Cross-Attentional Predictor architecture
-│   ├── x-jepa\_model.ipynb            # ViT Encoder definitions
-│   └── Pytorch\_dataset\_class.ipynb   # BEN-14K DataLoader
-├── research\_papers/                  # Foundational literature (X-JEPA, Deep Hashing, etc.)
+│   ├── x-jepa_model.ipynb            # ViT Encoder definitions
+│   └── Pytorch_dataset_class.ipynb   # BEN-14K DataLoader
+├── research_papers/                  # Foundational literature (X-JEPA, Deep Hashing, etc.)
 ├── assets/                           # Images for README and presentations
-├── gallery\_metadata.pkl              # Pre-computed metadata for the gallery
-├── optical\_gallery\_192bit.index      # FAISS Index for Optical Gallery
-├── sar\_gallery\_192bit.index          # FAISS Index for SAR Gallery
+├── gallery_metadata.pkl              # Pre-computed metadata for the gallery
+├── optical_gallery_192bit.index      # FAISS Index for Optical Gallery
+├── sar_gallery_192bit.index          # FAISS Index for SAR Gallery
 ├── requirements.txt                  # Python dependencies
 └── .gitignore                        # Excludes large files and weights
 
