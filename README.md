@@ -4,7 +4,7 @@
 
 
 
-`🔗 **Live Interactive App:** \[[Click here to launch Antariksh-JEPA](https://antariksh-jepa-cross-modal-retrieval-system.streamlit.app/)]`
+> 🔗 \*\*Live Interactive App:\*\* [Click here to launch Antariksh-JEPA](https://antariksh-jepa-cross-modal-retrieval-system.streamlit.app/)
 
 
 
@@ -158,11 +158,8 @@ Our architecture bridges the modality gap without relying on inefficient pixel-l
 
 
 1. **Zero-Shot Minimal Supervision (Label-Deficit):** We leverage georeferenced domain adaptation to align `SAR` and `Optical` modalities where human annotations are scarce. *(Ref: Zero-Shot Cross-Modal Retrieval for RS Images)*
-
 2. **Cross-Attentional Predictive Alignment (X-JEPA):** The model abandons inefficient pixel-level reconstruction. Instead, it predicts the latent representation of the target modality using context from the source modality. *(Ref: Choudhury et al., X-JEPA WACV 2026)*
-
 3. **HGR Maximal Correlation:** Augments the prediction loss to filter out sensor-specific noise (e.g., SAR speckle) and enforce orthogonal decorrelation, ensuring high F1-Scores even in noisy conditions. *(Ref: Robust Cross-Modal Retrieval via Maximal Correlation)*
-
 4. **Semantic Preserving Deep Hashing:** Converts the `192-D` continuous real-valued vectors into compact binary hash codes using a `tanh` layer, solving the computational bottleneck for massive `EO` archives. *(Ref: Multisensor Fusion and Explicit Semantic Preserving Deep Hashing)*
 
 
@@ -211,7 +208,7 @@ This ensures accurate distance calculations across all modes.
 ```text
 ISRO/
 
-├── Web\\\_app/
+├── Web\_app/
 │   └── app.py                        # Streamlit UI \\\& Retrieval Logic (Downloads HF assets automatically)
 ├── notebooks/
 │   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \\\& Visualization Notebook
