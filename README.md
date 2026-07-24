@@ -4,7 +4,7 @@
 
 
 
-> 🔗 \*\*Live Interactive App:\*\* [Click here to launch Antariksh-JEPA](https://antariksh-jepa-cross-modal-retrieval-system.streamlit.app/)
+> 🔗 **Live Interactive App:** [Click here to launch Antariksh-JEPA](https://antariksh-jepa-cross-modal-retrieval-system.streamlit.app/)
 
 
 
@@ -153,7 +153,7 @@ Our architecture bridges the modality gap without relying on inefficient pixel-l
 
 
 
-*(For detailed scientific foundations, refer to the papers in the `research\_papers/` directory).*
+*(For detailed scientific foundations, refer to the papers in the `research\\\_papers/` directory).*
 
 
 
@@ -208,14 +208,14 @@ This ensures accurate distance calculations across all modes.
 ```text
 ISRO/
 
-├── Web\_app/
-│   └── app.py                        # Streamlit UI \\\& Retrieval Logic (Downloads HF assets automatically)
+├── Web\\\_app/
+│   └── app.py                        # Streamlit UI \& Retrieval Logic (Downloads HF assets automatically)
 ├── notebooks/
-│   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \\\& Visualization Notebook
+│   ├── Master-Pipeline.ipynb         # Prototyping Notebook; Final Evaluation \& Visualization Notebook
 │   ├── build\_faiss.ipynb             # Script to build binary FAISS indices
 │   ├── evaluate.ipynb                # Evaluation metrics calculation
 │   ├── train.ipynb                   # Main training loop
-│   ├── losses.ipynb                  # Custom HGRMC \\\& PSA Loss definitions
+│   ├── losses.ipynb                  # Custom HGRMC \& PSA Loss definitions
 │   ├── predictor.ipynb               # Cross-Attentional Predictor architecture
 │   ├── x-jepa\_model.ipynb            # ViT Encoder definitions
 │   └── Pytorch\_dataset\_class.ipynb   # BEN-14K DataLoader
