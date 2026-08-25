@@ -242,5 +242,5 @@ ISRO/
 
 ###### > **- GeoOperations Explorer**
 
-> - Built for the Bharatiya Antariksh Hackathon
+> - Built for the Opto-SAR retrieval
 
