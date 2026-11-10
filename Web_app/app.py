@@ -1,511 +1,602 @@
+"""Local Streamlit demo for the contrastive Antariksh-JEPA retrieval model.
+
+This app intentionally uses the locally evaluated contrastive checkpoint and the
+matching held-out test indexes. It does not download or use the old prototype
+checkpoint. Set ANTARIKSH_RUN_DIR only if the experiment artifacts live elsewhere.
+"""
+
+import copy
+import io
+import html
+import json
 import os
-import time
-import torch
-import torch.nn as nn
+import zipfile
+from contextlib import contextmanager
+from pathlib import Path
+
+import faiss
 import numpy as np
 import pandas as pd
-import faiss
 import rasterio
-import rasterio.warp
+from rasterio.io import MemoryFile
+from rasterio.warp import transform_bounds
 import streamlit as st
-import matplotlib.pyplot as plt
+import streamlit.components.v1 as components
 import timm
-import folium
-from streamlit_folium import st_folium
-import hashlib
-from huggingface_hub import hf_hub_download
-import zipfile
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset
+from huggingface_hub import HfFileSystem, hf_hub_download
+from asset_cache import extract_test_tiles
 
-# ==========================================
-# 0. HUGGING FACE DOWNLOADER & PATH FINDER
-# ==========================================
-def find_dataset_paths(base_dir):
-    """
-    Recursively finds the actual locations of metadata.parquet and image folders.
-    This prevents path errors regardless of how the zip was extracted.
-    """
-    parquet_path = None
-    s1_folder_base = None
-    s2_folder_base = None
-    
-    for root, dirs, files in os.walk(base_dir):
-        # Skip hidden environments to speed up the search
-        dirs[:] = [d for d in dirs if d not in ['.git', '.conda', 'venv', 'env', '__pycache__']]
-        
-        if 'metadata.parquet' in files and parquet_path is None:
-            parquet_path = os.path.join(root, 'metadata.parquet')
-            
-        if 'BigEarthNet-S1' in dirs and s1_folder_base is None:
-            s1_folder_base = os.path.join(root, 'BigEarthNet-S1')
-            
-        if 'BigEarthNet-S2' in dirs and s2_folder_base is None:
-            s2_folder_base = os.path.join(root, 'BigEarthNet-S2')
-            
-        if parquet_path and s1_folder_base and s2_folder_base:
-            break
-            
-    return parquet_path, s1_folder_base, s2_folder_base
 
-def download_hf_assets():
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    # 1. Download Model Weights
-    model_dir = os.path.join(base_dir, "saved_models")
-    model_path = os.path.join(model_dir, "antariksh_best_model.pth")
-    if not os.path.exists(model_path):
-        st.sidebar.info("Downloading model weights from Hugging Face... This may take a moment.")
-        os.makedirs(model_dir, exist_ok=True)
-        downloaded_model = hf_hub_download(
-            repo_id="ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model", 
-            filename="saved_models/antariksh_best_model.pth"
-        )
-        import shutil
-        shutil.copy(downloaded_model, model_path)
-        st.sidebar.success("Model weights downloaded!")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RUN_DIR = PROJECT_ROOT / "notebooks" / "publication_runs_contrastive"
+HF_MODEL_REPO = "ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model"
+HF_DATASET_REPO = "ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2"
 
-    # 2. Check for extracted dataset using robust finder
-    parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
-    
-    if not s1_base or not os.path.exists(os.path.join(s1_base, "train")):
-        zip_path = os.path.join(base_dir, "BigEarthNet_14K.zip")
-        if not os.path.exists(zip_path):
-            st.sidebar.warning("Dataset not found locally. Downloading 3.1GB zip from Hugging Face...")
-            os.makedirs(os.path.dirname(zip_path), exist_ok=True)
-            downloaded_zip = hf_hub_download(
-                repo_id="ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2", 
-                filename="BigEarthNet_14K.zip",
-                repo_type="dataset"
-            )
-            import shutil
-            shutil.copy(downloaded_zip, zip_path)
-            st.sidebar.success("Dataset zip downloaded!")
-            
-        st.sidebar.info("Extracting BigEarthNet_14K.zip... Please wait.")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(base_dir)
-        st.sidebar.success("Dataset extracted successfully!")
-        
-        # Update paths after extraction
-        parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
 
-    # 3. If parquet is STILL missing, download it individually
-    if not parquet_path:
-        st.sidebar.info("Downloading metadata.parquet from Hugging Face...")
-        archive_dir = os.path.join(base_dir, "BigEarthNet_14K", "BEN_14k")
-        os.makedirs(archive_dir, exist_ok=True)
-        parquet_path = os.path.join(archive_dir, "metadata.parquet")
-        
-        downloaded_parquet = hf_hub_download(
-            repo_id="ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2", 
-            filename="metadata.parquet",
-            repo_type="dataset"
-        )
-        import shutil
-        shutil.copy(downloaded_parquet, parquet_path)
-        st.sidebar.success("Metadata downloaded!")
+def download_contrastive_assets():
+    """Download a single, matching checkpoint/index set from the Hub cache."""
+    revision = os.environ.get("ANTARIKSH_MODEL_REVISION", "b0a88022965887cc615ac264b7109072e77689cb")
+    names = ["best_checkpoint.pt", "final_test_evaluation/sar_test_192bit.index",
+             "final_test_evaluation/optical_test_192bit.index",
+             "final_test_evaluation/test_gallery_metadata.pkl"]
+    paths = [Path(hf_hub_download(repo_id=HF_MODEL_REPO,
+             filename=f"publication_runs_contrastive/{name}", revision=revision)) for name in names]
+    run_dir = paths[0].parent
+    if any(not path.is_file() for path in paths):
+        raise FileNotFoundError("The contrastive checkpoint/index bundle is incomplete.")
+    return run_dir
 
-# ==========================================
-# 1. CORE CLASSES (With Labels)
-# ==========================================
-class BEN14KDataset(torch.utils.data.Dataset):
-    def __init__(self, s1_folder_base, s2_folder_base, parquet_file, split='test'):
-        self.split = split
-        df = pd.read_parquet(parquet_file)
-        
-        # Robust split check
-        if 'split' in df.columns:
-            df_split = df[df['split'].str.lower() == split.lower()]
-            if df_split.empty and split == 'validation':
-                df_split = df[df['split'].str.lower() == 'val']
-            df = df_split
-            
-        s1_folder = os.path.join(s1_folder_base, split)
-        s2_folder = os.path.join(s2_folder_base, split)
-        
-        self.valid_pairs = []
-        self.patch_ids = []
-        self.labels = [] 
-        
-        for _, row in df.iterrows():
-            patch_id = row.get('patch_id', '')
-            s1_name = row.get('s1_name', '')
-            s2_name = row.get('s2v1_name', '')
-            img_labels = row.get('labels', [])
-            
-            # Find S2 Path
-            s2_path = None
-            if os.path.exists(os.path.join(s2_folder, f"{patch_id}.tif")):
-                s2_path = os.path.join(s2_folder, f"{patch_id}.tif")
-            elif os.path.exists(os.path.join(s2_folder, f"{s2_name}.tif")):
-                s2_path = os.path.join(s2_folder, f"{s2_name}.tif")
-            elif os.path.exists(os.path.join(s2_folder_base, f"{patch_id}.tif")):
-                s2_path = os.path.join(s2_folder_base, f"{patch_id}.tif")
-                
-            # Find S1 Path
-            s1_path = None
-            if os.path.exists(os.path.join(s1_folder, f"{patch_id}.tif")):
-                s1_path = os.path.join(s1_folder, f"{patch_id}.tif")
-            elif os.path.exists(os.path.join(s1_folder, f"{s1_name}.tif")):
-                s1_path = os.path.join(s1_folder, f"{s1_name}.tif")
-            elif os.path.exists(os.path.join(s1_folder_base, f"{patch_id}.tif")):
-                s1_path = os.path.join(s1_folder_base, f"{patch_id}.tif")
-                
+
+def prepare_cloud_test_dataset():
+    """Cache the archive on the machine running Streamlit and extract test TIFFs."""
+    revision = os.environ.get("ANTARIKSH_DATASET_REVISION", "main")
+    parquet = hf_hub_download(repo_id=HF_DATASET_REPO, filename="metadata.parquet",
+                              repo_type="dataset", revision=revision)
+    archive = hf_hub_download(repo_id=HF_DATASET_REPO, filename="BigEarthNet_14K.zip",
+                              repo_type="dataset", revision=revision)
+    cache_root = Path(os.environ.get("ANTARIKSH_TEST_CACHE_DIR", PROJECT_ROOT / "archive" / "contrastive_test_cache"))
+    return extract_test_tiles(archive, cache_root), Path(parquet)
+
+
+class BEN14KDataset(Dataset):
+    """Read the same test images, ordering, and preprocessing used in evaluation."""
+
+    def __init__(self, data_dir, parquet_file, split="test"):
+        metadata = pd.read_parquet(parquet_file)
+        if "split" in metadata.columns:
+            metadata = metadata[metadata["split"].str.lower() == split.lower()]
+        s1_dir = Path(data_dir) / "BigEarthNet-S1" / split
+        s2_dir = Path(data_dir) / "BigEarthNet-S2" / split
+        self.valid_pairs, self.patch_ids, self.labels = [], [], []
+
+        for _, row in metadata.iterrows():
+            patch_id = row.get("patch_id", "")
+            s1_name = row.get("s1_name", "")
+            s2_name = row.get("s2v1_name", "")
+            s1_candidates = [s1_dir / f"{patch_id}.tif", s1_dir / f"{s1_name}.tif"]
+            s2_candidates = [s2_dir / f"{patch_id}.tif", s2_dir / f"{s2_name}.tif"]
+            s1_path = next((path for path in s1_candidates if path.exists()), None)
+            s2_path = next((path for path in s2_candidates if path.exists()), None)
             if s1_path and s2_path:
                 self.valid_pairs.append((s1_path, s2_path))
                 self.patch_ids.append(patch_id)
-                self.labels.append(img_labels)
+                self.labels.append(row.get("labels", []))
 
     def __len__(self):
         return len(self.valid_pairs)
 
-    def read_tif(self, path):
-        with rasterio.open(path) as src:
-            return src.read()
+    @contextmanager
+    def open_raster(self, index, modality):
+        path = self.valid_pairs[index][0 if modality == "sar" else 1]
+        with rasterio.open(path) as source:
+            yield source
 
-    def __getitem__(self, idx):
-        if idx >= len(self.valid_pairs) or idx < 0:
-            raise IndexError(f"Dataset only has {len(self.valid_pairs)} valid image pairs, but index {idx} was requested.")
-            
-        s1_path, s2_path = self.valid_pairs[idx]
-        s1_img = self.read_tif(s1_path)
-        s2_img = self.read_tif(s2_path)
-        
-        s1_img = np.clip(s1_img, -25.0, 0.0)
-        s1_img = (s1_img - (-25.0)) / 25.0
-        s2_img = np.clip(s2_img, 0, 10000) / 10000.0
-        
-        s1_tensor = torch.tensor(s1_img, dtype=torch.float32)
-        s2_tensor = torch.tensor(s2_img, dtype=torch.float32)
-        return s1_tensor, s2_tensor
+    def __getitem__(self, index):
+        with self.open_raster(index, "sar") as source:
+            sar = source.read().astype(np.float32)
+        with self.open_raster(index, "optical") as source:
+            optical = source.read().astype(np.float32)
+        sar = (np.clip(sar, -25.0, 0.0) + 25.0) / 25.0
+        optical = np.clip(optical, 0.0, 10000.0) / 10000.0
+        return torch.from_numpy(sar), torch.from_numpy(optical)
 
-class Antariksh_ViT_Encoders(nn.Module):
+
+class RemoteBEN14KDataset(BEN14KDataset):
+    """Read requested test TIFFs from a seekable remote ZIP into memory only."""
+
+    def __init__(self, split="test"):
+        revision = os.environ.get("ANTARIKSH_DATASET_REVISION", "main")
+        self.fs = HfFileSystem()
+        self.base = f"datasets/{HF_DATASET_REPO}@{revision}"
+        self.archive_path = f"{self.base}/BigEarthNet_14K.zip"
+        with self.fs.open(f"{self.base}/metadata.parquet", "rb", cache_type="none") as f:
+            metadata = pd.read_parquet(io.BytesIO(f.read()))
+        if "split" in metadata.columns:
+            metadata = metadata[metadata["split"].str.lower() == split.lower()]
+        with self.fs.open(self.archive_path, "rb", cache_type="none") as remote:
+            with zipfile.ZipFile(remote) as archive:
+                members = {}
+                for name in archive.namelist():
+                    parts = name.replace("\\", "/").split("/")
+                    for i, part in enumerate(parts):
+                        if part in ("BigEarthNet-S1", "BigEarthNet-S2") and parts[i + 1:i + 2] == [split] and len(parts) == i + 3:
+                            key = (part, parts[-1])
+                            if key in members:
+                                raise ValueError(f"Duplicate ZIP member for {key}")
+                            members[key] = name
+        self.valid_pairs, self.patch_ids, self.labels = [], [], []
+        for _, row in metadata.iterrows():
+            patch_id = row.get("patch_id", "")
+            s1_name, s2_name = row.get("s1_name", ""), row.get("s2v1_name", "")
+            s1 = next((members.get(("BigEarthNet-S1", f"{value}.tif")) for value in (patch_id, s1_name) if members.get(("BigEarthNet-S1", f"{value}.tif"))), None)
+            s2 = next((members.get(("BigEarthNet-S2", f"{value}.tif")) for value in (patch_id, s2_name) if members.get(("BigEarthNet-S2", f"{value}.tif"))), None)
+            if s1 and s2:
+                self.valid_pairs.append((s1, s2))
+                self.patch_ids.append(patch_id)
+                self.labels.append(row.get("labels", []))
+
+    @contextmanager
+    def open_raster(self, index, modality):
+        member = self.valid_pairs[index][0 if modality == "sar" else 1]
+        with self.fs.open(self.archive_path, "rb", cache_type="none") as remote:
+            with zipfile.ZipFile(remote) as archive:
+                content = archive.read(member)
+        with MemoryFile(content) as memory:
+            with memory.open() as source:
+                yield source
+
+
+class AntarikshViTEncoders(nn.Module):
     def __init__(self):
         super().__init__()
-        self.s1_encoder = timm.create_model('vit_tiny_patch16_224', img_size=120, patch_size=8, in_chans=2, num_classes=0)
-        self.s2_encoder = timm.create_model('vit_tiny_patch16_224', img_size=120, patch_size=8, in_chans=10, num_classes=0)
+        self.s1_encoder = timm.create_model(
+            "vit_tiny_patch16_224", img_size=120, patch_size=8, in_chans=2, num_classes=0
+        )
+        self.s2_encoder = timm.create_model(
+            "vit_tiny_patch16_224", img_size=120, patch_size=8, in_chans=10, num_classes=0
+        )
 
-    def forward(self, s1_imgs, s2_imgs):
-        s1_latent = self.s1_encoder.forward_features(s1_imgs)
-        s2_latent = self.s2_encoder.forward_features(s2_imgs)
-        return s1_latent, s2_latent
 
-class CrossAttnPredictor(nn.Module):
-    def __init__(self, embed_dim=192, num_heads=6, depth=4, num_shared_queries=8):
+class PositionalCrossPredictor(nn.Module):
+    def __init__(self, embed_dim=192, num_heads=6, depth=4, num_shared_queries=8, num_patches=225):
         super().__init__()
-        self.embed_dim = embed_dim
         self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.shared_queries = nn.Parameter(torch.zeros(1, num_shared_queries, embed_dim))
-        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True)
-        self.predictor = nn.TransformerDecoder(decoder_layer, num_layers=depth)
+        self.target_position = nn.Embedding(num_patches, embed_dim)
+        layer = nn.TransformerDecoderLayer(
+            d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True
+        )
+        self.decoder = nn.TransformerDecoder(layer, num_layers=depth)
 
-    def forward(self, s2_visible_features, num_hidden_patches):
-        batch_size = s2_visible_features.size(0)
-        mask_tokens = self.mask_token.expand(batch_size, num_hidden_patches, -1)
+    def forward(self, source_visible, target_positions):
+        batch_size, target_count = target_positions.shape
+        masks = self.mask_token.expand(batch_size, target_count, -1)
+        masks = masks + self.target_position(target_positions)
         queries = self.shared_queries.expand(batch_size, -1, -1)
-        decoder_input = torch.cat([queries, mask_tokens], dim=1)
-        predicted_features = self.predictor(tgt=decoder_input, memory=s2_visible_features)
-        return predicted_features[:, queries.size(1):, :]
+        decoded = self.decoder(torch.cat([queries, masks], dim=1), source_visible)
+        return decoded[:, queries.size(1) :]
 
-# ==========================================
-# 2. HELPER FUNCTIONS & GEO-LOCATOR
-# ==========================================
-def plot_optical(tensor_img):
-    img = tensor_img[:3, :, :].permute(1, 2, 0).numpy()
-    img = np.clip(img * 3.0, 0, 1) 
-    return img
 
-def plot_sar(tensor_img):
-    img = tensor_img[0, :, :].numpy()
-    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-    return img
+class BinaryHashHead(nn.Module):
+    def __init__(self, embed_dim, hash_bits):
+        super().__init__()
+        self.projection = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, hash_bits), nn.Tanh())
 
-def get_lat_lon_from_tif(tif_path):
-    try:
-        with rasterio.open(tif_path) as src:
-            bounds = src.bounds
-            crs = src.crs
-            if crs is None:
-                return None
-            left, bottom, right, top = rasterio.warp.transform_bounds(crs, 'EPSG:4326', *bounds)
-            return ((bottom + top) / 2.0, (left + right) / 2.0)
-    except Exception:
-        return None
+    def forward(self, features):
+        return self.projection(features)
 
-def get_lat_lon_from_metadata(patch_id, full_df):
-    match = full_df[full_df['patch_id'] == patch_id]
-    if not match.empty:
-        row = match.iloc[0]
-        for lat_col, lon_col in [('lat', 'lon'), ('latitude', 'longitude')]:
-            if lat_col in row and lon_col in row and not pd.isna(row[lat_col]):
-                return (float(row[lat_col]), float(row[lon_col]))
-        
-        if 'country' in row:
-            country = row['country']
-            COUNTRY_COORDS = {
-                'Austria': (47.5162, 14.5501), 'Belgium': (50.5039, 4.4699),
-                'Finland': (61.9241, 25.7482), 'Ireland': (53.1424, -7.6921),
-                'Kosovo': (42.6026, 20.9030), 'Lithuania': (55.1694, 23.8813),
-                'Luxembourg': (49.8153, 6.1296), 'Portugal': (39.3999, -8.2245),
-                'Serbia': (44.0165, 21.0059), 'Switzerland': (46.8182, 8.2275)
-            }
-            if country in COUNTRY_COORDS:
-                base_lat, base_lon = COUNTRY_COORDS[country]
-                hash_val = int(hashlib.md5(patch_id.encode('utf-8')).hexdigest(), 16)
-                lat_offset = ((hash_val % 1000) / 1000.0 - 0.5) * 1.5
-                lon_offset = (((hash_val // 1000) % 1000) / 1000.0 - 0.5) * 1.5
-                return (base_lat + lat_offset, base_lon + lon_offset)
-    return None
 
-@st.cache_resource
-def load_system():
-    # Trigger HF downloads if needed before loading
-    download_hf_assets()
-    
-    device = torch.device("cpu") 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    encoders = Antariksh_ViT_Encoders().to(device)
-    predictor = CrossAttnPredictor(embed_dim=192).to(device)
-    
-    model_path = os.path.join(base_dir, "saved_models", "antariksh_best_model.pth")
-    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    
-    encoders.load_state_dict(checkpoint['encoders_state'])
-    predictor.load_state_dict(checkpoint['predictor_state'])
-    encoders.eval()
-    predictor.eval()
-    
-    sar_index = faiss.read_index_binary(os.path.join(base_dir, "sar_gallery_192bit.index"))
-    optical_index = faiss.read_index_binary(os.path.join(base_dir, "optical_gallery_192bit.index"))
-    
-    meta_path = os.path.join(base_dir, "gallery_metadata.pkl")
-    gallery_meta = pd.read_pickle(meta_path)
-    
-    # Use robust path finder
-    parquet_path, s1_base, s2_base = find_dataset_paths(base_dir)
-    
-    if not parquet_path or not s1_base or not s2_base:
-        raise FileNotFoundError("Could not locate the dataset folders or metadata.parquet after extraction. Please check your folder structure.")
-    
-    test_dataset = BEN14KDataset(s1_base, s2_base, parquet_path, split='test')
-    val_dataset = BEN14KDataset(s1_base, s2_base, parquet_path, split='validation')
-    
-    return encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device, parquet_path
+class ContrastiveAntarikshJEPA(nn.Module):
+    """Checkpoint-compatible inference model for the publication contrastive run."""
 
-# ==========================================
-# 3. STREAMLIT FRONTEND
-# ==========================================
-st.set_page_config(page_title="Antariksh-JEPA Retrieval", layout="wide")
-st.title("🛰️ Antariksh-JEPA: Universal Satellite Image Retrieval")
-st.markdown("**ISRO Hackathon 2026** | Hashing, Semantic Labels & Geospatial Mapping")
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.online_encoders = AntarikshViTEncoders()
+        self.target_encoders = copy.deepcopy(self.online_encoders)
+        for parameter in self.target_encoders.parameters():
+            parameter.requires_grad = False
+        self.num_patches = (config["image_size"] // config["patch_size"]) ** 2
+        self.optical_to_sar = PositionalCrossPredictor(config["embed_dim"], num_patches=self.num_patches)
+        self.sar_to_optical = PositionalCrossPredictor(config["embed_dim"], num_patches=self.num_patches)
+        self.hash_head = BinaryHashHead(config["embed_dim"], config["hash_bits"])
 
-try:
-    encoders, predictor, sar_index, optical_index, gallery_meta, test_dataset, val_dataset, device, parquet_path = load_system()
-    full_parquet_df = pd.read_parquet(parquet_path)
-    st.sidebar.success("All Modalities & Metadata Loaded!")
-except Exception as e:
-    st.error(f"Error loading models. Run from the main folder. Details: {e}")
-    st.stop()
 
-# --- INIT SESSION STATE ---
-if 'search_results' not in st.session_state:
-    st.session_state.search_results = None
+def select_tokens(tokens, mask):
+    selected_per_item = int(mask.sum(dim=1)[0].item())
+    return tokens[mask].reshape(tokens.size(0), selected_per_item, tokens.size(-1))
 
-# --- SIDEBAR OPTIONS ---
-st.sidebar.header("Retrieval Settings")
-task_type = st.sidebar.radio(
-    "Select Retrieval Task:",
-    ("Optical ➔ SAR", "SAR ➔ Optical", "Optical ➔ Optical", "SAR ➔ SAR")
-)
 
-input_method = st.sidebar.radio("Input Method:", ("Use Test Dataset (ISRO Eval)", "Upload Custom GeoTIFF"))
+@torch.no_grad()
+def deterministic_hash_code(model, image, modality, device):
+    """Exactly matches deterministic_hash_codes() used in final_test_evaluation."""
+    model.eval()
+    target_count = int(model.num_patches * model.config["target_ratio"])
+    positions = torch.arange(target_count, device=device).unsqueeze(0)
+    visible = torch.ones(model.num_patches, dtype=torch.bool, device=device)
+    visible[target_count : 2 * target_count] = False
+    image = image.unsqueeze(0).to(device)
 
-run_search = False
-query_s1_tensor = None
-query_s2_tensor = None
-query_patch_id = "Custom_Upload"
-query_labels = "Unknown (Custom Upload)"
-query_geo_coords = None
+    if modality == "optical":
+        tokens = model.online_encoders.s2_encoder.forward_features(image)[:, 1:]
+        predicted = model.optical_to_sar(select_tokens(tokens, visible.unsqueeze(0)), positions)
+    elif modality == "sar":
+        tokens = model.online_encoders.s1_encoder.forward_features(image)[:, 1:]
+        predicted = model.sar_to_optical(select_tokens(tokens, visible.unsqueeze(0)), positions)
+    else:
+        raise ValueError("modality must be optical or sar")
 
-if input_method == "Use Test Dataset (ISRO Eval)":
-    
-    dataset_len = len(test_dataset)
-    if dataset_len == 0:
-        st.error("🚨 Critical Error: The Test Dataset loaded 0 valid image pairs. Please ensure the dataset folders exist and match the parquet file metadata.")
-        st.stop()
-        
-    query_idx = st.sidebar.slider("Select Query Image (Index)", 0, dataset_len-1, min(42, dataset_len-1))
-    
-    if st.sidebar.button("Run Retrieval"):
-        query_s1_tensor, query_s2_tensor = test_dataset[query_idx]
-        query_patch_id = test_dataset.patch_ids[query_idx]
-        query_labels = ", ".join(test_dataset.labels[query_idx])
-        
-        # Pull path directly from valid pairs!
-        s1_path_actual = test_dataset.valid_pairs[query_idx][0]
-        query_geo_coords = get_lat_lon_from_tif(s1_path_actual)
-        
-        if query_geo_coords is None:
-            query_geo_coords = get_lat_lon_from_metadata(query_patch_id, full_parquet_df)
-            
-        run_search = True
-else:
-    st.sidebar.warning("⚠️ **Note**: Custom uploads must be preprocessed GeoTIFFs (120x120 pixels).")
-    uploaded_file = st.sidebar.file_uploader("Upload a GeoTIFF (.tif)", type=["tif", "tiff"])
-    
-    if st.sidebar.button("Run Custom Retrieval") and uploaded_file is not None:
-        try:
-            with open("temp_upload.tif", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            with rasterio.open("temp_upload.tif") as src:
-                img = src.read()
-                
-            query_geo_coords = get_lat_lon_from_tif("temp_upload.tif")
-            
-            if "Optical ➔" in task_type:
-                if img.shape[0] != 10:
-                    st.error(f"Expected 10 channels for Optical S2, but got {img.shape[0]}.")
-                else:
-                    img = np.clip(img, 0, 10000) / 10000.0
-                    query_s2_tensor = torch.tensor(img, dtype=torch.float32)
-                    run_search = True
-            else:
-                if img.shape[0] != 2:
-                    st.error(f"Expected 2 channels (VV, VH) for SAR S1, but got {img.shape[0]}.")
-                else:
-                    img = np.clip(img, -25.0, 0.0)
-                    img = (img - (-25.0)) / 25.0
-                    query_s1_tensor = torch.tensor(img, dtype=torch.float32)
-                    run_search = True
-        except Exception as e:
-            st.error(f"Failed to process custom image: {e}")
+    continuous = model.hash_head(predicted.mean(dim=1)).cpu().numpy()
+    return np.ascontiguousarray(np.packbits(continuous > 0, axis=1))
 
-# --- EXECUTE RETRIEVAL (THE FIXED BLOCK) ---
-if run_search:
-    query_type = task_type.split(' ➔ ')[0]
-    target_type = task_type.split(' ➔ ')[1]
-    
-    st.subheader(f"🔍 Query Image: {query_type}")
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        fig, ax = plt.subplots(figsize=(3,3))
-        if query_type == "Optical":
-            ax.imshow(plot_optical(query_s2_tensor))
-        else:
-            ax.imshow(plot_sar(query_s1_tensor), cmap='gray')
-        ax.axis('off')
-        st.pyplot(fig)
-        st.caption(f"**Patch ID:** {query_patch_id}")
-        st.caption(f"**Labels:** {query_labels}")
-        
-    start_time = time.perf_counter()
-    with torch.no_grad():
-        if query_type == "Optical":
-            latent = encoders.s2_encoder.forward_features(query_s2_tensor.unsqueeze(0).to(device))
-            num_hidden = int(0.5 * 225)
-            s2_visible = latent[:, :226-num_hidden, :]
-            predicted_sar = predictor(s2_visible, num_hidden)
-            query_feature = predicted_sar.mean(dim=1).cpu().numpy() 
-        else:
-            latent = encoders.s1_encoder.forward_features(query_s1_tensor.unsqueeze(0).to(device))
-            query_feature = latent.mean(dim=1).cpu().numpy()
-            
-        binary_hash = (query_feature > 0).astype(bool)
-        packed_query = np.packbits(binary_hash, axis=1)
-        
-        if target_type == "SAR":
-            distances, indices = sar_index.search(packed_query, 5) 
-        else:
-            distances, indices = optical_index.search(packed_query, 5)
-    
-    end_time = time.perf_counter()
-    search_time = (end_time - start_time) * 1000
-    
-    st.session_state.search_results = {
-        "query_type": query_type,
-        "target_type": target_type,
-        "task_type": task_type,
-        "query_s2_tensor": query_s2_tensor,
-        "query_s1_tensor": query_s1_tensor,
-        "query_patch_id": query_patch_id,
-        "query_labels": query_labels,
-        "query_geo_coords": query_geo_coords,
-        "indices": indices,
-        "distances": distances,
-        "search_time": search_time
+
+def labels_to_text(labels):
+    if isinstance(labels, str):
+        return labels
+    if isinstance(labels, (list, tuple, np.ndarray)):
+        return ", ".join(map(str, labels))
+    return str(labels)
+
+
+def _percentile_rescale(image, low=2.0, high=98.0):
+    """Display-only contrast stretch; model inputs and retrieval codes are unchanged."""
+    lower, upper = np.percentile(image, [low, high])
+    return np.clip((image - lower) / max(upper - lower, 1e-8), 0.0, 1.0)
+
+
+def optical_preview(tensor):
+    """Consistent Sentinel-2 B04/B03/B02 true-colour-style preview (R/G/B)."""
+    bands = tensor.detach().cpu().numpy()
+    # Dataset band order begins B02, B03, B04. Reorder it to conventional RGB.
+    rgb = np.moveaxis(bands[[2, 1, 0]], 0, -1)
+    # Fixed reflectance scaling keeps hue comparable across tiles.  Per-tile RGB
+    # percentile stretching can change the channel balance and create a green cast.
+    rgb = np.clip(rgb / 0.30, 0.0, 1.0)
+    return np.power(rgb, 1.0 / 2.2)
+
+
+def sar_preview(tensor):
+    image = tensor[0].numpy()
+    return (image - image.min()) / (image.max() - image.min() + 1e-8)
+
+
+def footprint_wgs84(dataset, index):
+    """Return the true georeferenced footprint of a held-out tile in longitude/latitude."""
+    # S1 and S2 of a pair are co-registered.  Sentinel-2 is used consistently here.
+    with dataset.open_raster(index, "optical") as source:
+        if source.crs is None:
+            raise ValueError(f"No CRS is available for tile {dataset.patch_ids[index]}.")
+        west, south, east, north = transform_bounds(source.crs, "EPSG:4326", *source.bounds, densify_pts=21)
+    polygon = [[west, south], [east, south], [east, north], [west, north], [west, south]]
+    return {
+        "polygon": polygon,
+        "longitude": (west + east) / 2.0,
+        "latitude": (south + north) / 2.0,
+        "bounds": (west, south, east, north),
     }
 
-# --- RENDER RESULTS FROM SESSION STATE ---
-if st.session_state.search_results is not None:
-    res = st.session_state.search_results
-    
-    st.success(f"⚡ {res['task_type']} retrieval completed in {res['search_time']:.3f} milliseconds!")
-    
-    st.subheader(f"🎯 Top 5 Retrieved Images: {res['target_type']}")
-    cols = st.columns(5)
-    retrieved_map_data = [] 
-    
-    for i in range(5):
-        match_idx = res['indices'][0][i]
-        dist = res['distances'][0][i]
-        
-        matched_patch_id = gallery_meta.iloc[match_idx]['patch_id']
-        matched_labels = ", ".join(gallery_meta.iloc[match_idx]['labels'])
-        
-        if match_idx < len(val_dataset):
-            s1_tensor_match, s2_tensor_match = val_dataset[match_idx]
-            match_path_actual = val_dataset.valid_pairs[match_idx][0] # Safely pull direct path
-            
-            coords = get_lat_lon_from_tif(match_path_actual)
-            
-            if coords is None:
-                coords = get_lat_lon_from_metadata(matched_patch_id, full_parquet_df)
-                
-            if coords:
-                retrieved_map_data.append((coords, matched_patch_id, i+1))
-                
-            with cols[i]:
-                fig, ax = plt.subplots(figsize=(3,3))
-                if res['target_type'] == "SAR":
-                    ax.imshow(plot_sar(s1_tensor_match), cmap='gray')
-                else:
-                    ax.imshow(plot_optical(s2_tensor_match))
-                    
-                ax.axis('off')
-                st.pyplot(fig)
-                st.markdown(f"**Rank {i+1}** | Dist: {dist}")
-                st.caption(f"**Labels:** {matched_labels}")
-        else:
-             with cols[i]:
-                 st.error(f"Image match {match_idx} out of bounds.")
 
-    # --- GEOSPATIAL MAP RENDERING ---
-    st.markdown("---")
-    st.subheader("🌍 Geospatial Distribution (Query vs Retrieved)")
-    
-    if res['query_geo_coords'] or retrieved_map_data:
-        map_center = res['query_geo_coords'] if res['query_geo_coords'] else retrieved_map_data[0][0]
-        m = folium.Map(location=map_center, zoom_start=4, tiles="CartoDB positron")
-        
-        if res['query_geo_coords']:
-            query_html = f"""<div style="background-color: #E81123; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; justify-content: center; align-items: center; font-size: 16px; font-weight: bold; border: 2px solid white; box-shadow: 2px 2px 4px rgba(0,0,0,0.5);">Q</div>"""
-            folium.Marker(
-                location=res['query_geo_coords'],
-                popup=folium.Popup(f"<b>QUERY IMAGE</b><br>ID: {res['query_patch_id']}", max_width=200),
-                icon=folium.DivIcon(html=query_html),
-                tooltip="Query Image"
-            ).add_to(m)
-            
-        for coords, p_id, rank in retrieved_map_data:
-            rank_html = f"""<div style="background-color: #0078D7; color: white; border-radius: 50%; width: 28px; height: 28px; display: flex; justify-content: center; align-items: center; font-size: 14px; font-weight: bold; border: 2px solid white; box-shadow: 2px 2px 4px rgba(0,0,0,0.5);">{rank}</div>"""
-            folium.Marker(
-                location=coords,
-                popup=folium.Popup(f"<b>Rank {rank}</b><br>ID: {p_id}", max_width=200),
-                icon=folium.DivIcon(html=rank_html),
-                tooltip=f"Retrieved Rank {rank}"
-            ).add_to(m)
-            
-        st_folium(m, width=1200, height=500, returned_objects=[])
-    else:
-        st.info("Geospatial coordinates (Lat/Lon) could not be extracted.")
+def _combined_map_zoom(footprints):
+    """Choose a readable overview zoom from all footprint centres."""
+    longitudes = [item["longitude"] for item in footprints]
+    latitudes = [item["latitude"] for item in footprints]
+    span = max(max(longitudes) - min(longitudes), max(latitudes) - min(latitudes))
+    if span < 0.02:
+        return 13
+    if span < 0.10:
+        return 11
+    if span < 0.50:
+        return 9
+    if span < 2.0:
+        return 7
+    if span < 8.0:
+        return 5
+    return 3
+
+
+def combined_footprint_map(query_footprint, gallery_footprints):
+    """Return a Leaflet map with visible Q/rank badges inside every footprint."""
+    rank_colours = [
+        "#1e88e5", "#2563eb", "#0e7490", "#16a34a", "#7c3aed",
+        "#d97706", "#be185d", "#0891b2", "#65a30d", "#4b5563",
+    ]
+    layer_data = [{
+        "polygon": query_footprint["polygon"], "label": f"Q — Query: {query_footprint['patch_id']}",
+        "marker": "Q", "colour": "#dc2626", "longitude": query_footprint["longitude"],
+        "latitude": query_footprint["latitude"],
+    }]
+    for rank, footprint in enumerate(gallery_footprints, start=1):
+        colour = rank_colours[(rank - 1) % len(rank_colours)]
+        layer_data.append({
+            "polygon": footprint["polygon"], "label": f"R{rank} — {footprint['patch_id']} | Hamming: {footprint['hamming_distance']}",
+            "marker": str(rank), "colour": colour,
+            "longitude": footprint["longitude"], "latitude": footprint["latitude"],
+        })
+    payload = json.dumps(layer_data)
+    return f'''<!doctype html>
+<html><head><meta charset="utf-8" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+html, body, #map {{ height: 100%; width: 100%; margin: 0; }}
+.rank-badge {{ background: transparent; border: 0; }}
+.rank-badge span {{ display:flex; width:34px; height:34px; align-items:center; justify-content:center;
+  border-radius:50%; border:3px solid #0f172a; box-sizing:border-box; color:#fff;
+  font:700 18px/1 Arial,sans-serif; text-shadow:0 1px 1px #0f172a; }}
+.overlap-badges {{ display:flex; align-items:center; gap:2px; background:transparent; border:0; }}
+.overlap-badges span {{ display:flex; width:34px; height:34px; align-items:center; justify-content:center;
+  border-radius:50%; border:3px solid #0f172a; box-sizing:border-box; color:#fff;
+  font:700 18px/1 Arial,sans-serif; text-shadow:0 1px 1px #0f172a; }}
+</style></head><body><div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const items = {payload};
+const map = L.map('map', {{scrollWheelZoom:true}});
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+  attribution: 'Tiles &copy; Esri — Source: Esri, TomTom, Garmin, FAO, NOAA, USGS, OpenStreetMap contributors', maxZoom: 19
+}}).addTo(map);
+const allBounds = [];
+const query = items[0];
+const galleries = items.slice(1);
+const sameCentre = (a, b) => Math.abs(a.latitude - b.latitude) < 1e-8 && Math.abs(a.longitude - b.longitude) < 1e-8;
+const overlappingRanks = galleries.filter((item) => sameCentre(query, item));
+
+// First draw translucent gallery fills, then the red query, then dashed gallery borders.
+// This makes a shared footprint visibly purple/red-blue rather than allowing one polygon to hide another.
+galleries.forEach((item) => {{
+  const latLngs = item.polygon.map((point) => [point[1], point[0]]);
+  const polygon = L.polygon(latLngs, {{color:item.colour, weight:0, fillColor:item.colour, fillOpacity:0.18}}).addTo(map);
+  polygon.bindTooltip(item.label, {{sticky:true}});
+  allBounds.push(...latLngs);
+}});
+const queryLatLngs = query.polygon.map((point) => [point[1], point[0]]);
+const queryPolygon = L.polygon(queryLatLngs, {{color:query.colour, weight:5, fillColor:query.colour, fillOpacity:0.23}}).addTo(map);
+queryPolygon.bindTooltip(query.label, {{sticky:true}});
+allBounds.push(...queryLatLngs);
+galleries.forEach((item) => {{
+  const latLngs = item.polygon.map((point) => [point[1], point[0]]);
+  const outline = L.polygon(latLngs, {{color:item.colour, weight:3, dashArray:'8 6', fill:false}}).addTo(map);
+  outline.bindTooltip(item.label, {{sticky:true}});
+}});
+
+const marked = new Set();
+if (overlappingRanks.length) {{
+  const overlapHtml = `<div class="overlap-badges"><span style="background:${{query.colour}}">Q</span>${{overlappingRanks.map((item) => `<span style="background:${{item.colour}}">${{item.marker}}</span>`).join('')}}</div>`;
+  const overlapBadge = L.divIcon({{className:'overlap-badges', html:overlapHtml, iconSize:[36 + 36 * overlappingRanks.length,34], iconAnchor:[18 + 18 * overlappingRanks.length,17]}});
+  L.marker([query.latitude, query.longitude], {{icon:overlapBadge, keyboard:false, zIndexOffset:1000}}).addTo(map)
+    .bindTooltip(`Exact footprint overlap: Q and rank ${{overlappingRanks.map((item) => item.marker).join(', ')}}`, {{direction:'top'}});
+  marked.add('Q');
+  overlappingRanks.forEach((item) => marked.add(item.marker));
+}}
+items.forEach((item) => {{
+  if (marked.has(item.marker)) return;
+  const badge = L.divIcon({{className:'rank-badge', html:`<span style="background:${{item.colour}}">${{item.marker}}</span>`, iconSize:[34,34], iconAnchor:[17,17]}});
+  L.marker([item.latitude, item.longitude], {{icon:badge, keyboard:false}}).addTo(map).bindTooltip(item.label, {{direction:'top'}});
+}});
+map.fitBounds(L.latLngBounds(allBounds).pad(0.22));
+</script></body></html>'''
+
+
+def resolve_run_dir():
+    return Path(os.environ.get("ANTARIKSH_RUN_DIR", str(DEFAULT_RUN_DIR))).expanduser().resolve()
+
+
+@st.cache_resource(show_spinner="Loading contrastive checkpoint and gallery (first download may take time)...")
+def load_system(run_dir_text):
+    # Hub is the default source. An explicit run directory is an opt-in local override.
+    run_dir = Path(run_dir_text) if "ANTARIKSH_RUN_DIR" in os.environ else download_contrastive_assets()
+    checkpoint_path = run_dir / "best_checkpoint.pt"
+    evaluation_dir = run_dir / "final_test_evaluation"
+    required = [
+        checkpoint_path,
+        evaluation_dir / "sar_test_192bit.index",
+        evaluation_dir / "optical_test_192bit.index",
+        evaluation_dir / "test_gallery_metadata.pkl",
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise FileNotFoundError("Missing contrastive assets:\n" + "\n".join(missing))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config = checkpoint["config"]
+    use_local = "ANTARIKSH_DATA_DIR" in os.environ or "ANTARIKSH_PARQUET_FILE" in os.environ
+    if use_local:
+        if not (os.environ.get("ANTARIKSH_DATA_DIR") and os.environ.get("ANTARIKSH_PARQUET_FILE")):
+            raise ValueError("Set both ANTARIKSH_DATA_DIR and ANTARIKSH_PARQUET_FILE for a local dataset.")
+        data_dir = Path(os.environ["ANTARIKSH_DATA_DIR"])
+        parquet_file = Path(os.environ["ANTARIKSH_PARQUET_FILE"])
+        if not data_dir.exists() or not parquet_file.exists():
+            raise FileNotFoundError("Configured local dataset paths are unavailable.")
+
+    model = ContrastiveAntarikshJEPA(config).to(device)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+    sar_index = faiss.read_index_binary(str(evaluation_dir / "sar_test_192bit.index"))
+    optical_index = faiss.read_index_binary(str(evaluation_dir / "optical_test_192bit.index"))
+    gallery_metadata = pd.read_pickle(evaluation_dir / "test_gallery_metadata.pkl")
+    if not use_local:
+        data_dir, parquet_file = prepare_cloud_test_dataset()
+    test_dataset = BEN14KDataset(data_dir, parquet_file, split="test")
+    if len(test_dataset) != len(gallery_metadata) or sar_index.ntotal != len(gallery_metadata) or optical_index.ntotal != len(gallery_metadata):
+        raise RuntimeError(
+            f"Index metadata has {len(gallery_metadata)} items but local test dataset has {len(test_dataset)}. "
+            "Use the exact dataset used during final evaluation."
+        )
+    if "patch_id" not in gallery_metadata or list(map(str, gallery_metadata["patch_id"])) != list(map(str, test_dataset.patch_ids)):
+        raise RuntimeError("Gallery metadata does not match the test dataset patch IDs in order. Refusing to display incorrect retrieval results.")
+    return model, device, sar_index, optical_index, gallery_metadata, test_dataset, checkpoint["epoch"] + 1
+
+
+st.set_page_config(page_title="Antariksh-JEPA Contrastive Retrieval", layout="wide")
+st.title("Antariksh-JEPA: Contrastive Cross-Modal Retrieval")
+st.caption("Contrastive checkpoint • 192-bit (24-byte) image hashes • held-out test gallery")
+
+run_dir = resolve_run_dir()
+try:
+    model, device, sar_index, optical_index, gallery_metadata, test_dataset, best_epoch = load_system(str(run_dir))
+except Exception as error:
+    st.error(str(error))
+    st.stop()
+
+st.sidebar.success(f"Contrastive checkpoint loaded (best validation epoch {best_epoch})")
+st.sidebar.caption("Model: Hugging Face cache" if "ANTARIKSH_RUN_DIR" not in os.environ else f"Run directory: {run_dir}")
+st.sidebar.caption("Dataset: local override" if "ANTARIKSH_DATA_DIR" in os.environ else "Dataset: streamed from Hugging Face ZIP")
+task = st.sidebar.radio(
+    "Retrieval direction",
+    ("Optical → SAR", "SAR → Optical", "Optical → Optical", "SAR → SAR"),
+)
+input_mode = st.sidebar.radio("Query source", ("Held-out test image", "Custom GeoTIFF"))
+top_k = st.sidebar.slider("Retrieved images", min_value=1, max_value=10, value=5)
+
+query = None
+query_index = None
+query_id = "Custom upload"
+query_labels = "Unknown"
+custom_query_footprint = None
+custom_map_note = None
+
+query_modality, target_modality = task.lower().split(" → ")
+
+if input_mode == "Held-out test image":
+    index = st.sidebar.slider("Test query index", 0, len(test_dataset) - 1, min(42, len(test_dataset) - 1))
+    if st.sidebar.button("Run retrieval", type="primary"):
+        sar, optical = test_dataset[index]
+        query = optical if query_modality == "optical" else sar
+        query_index = index
+        query_id = test_dataset.patch_ids[index]
+        query_labels = labels_to_text(test_dataset.labels[index])
+else:
+    upload = st.sidebar.file_uploader("Upload 120×120 GeoTIFF", type=("tif", "tiff"))
+    if st.sidebar.button("Run custom retrieval", type="primary"):
+        if upload is None:
+            st.sidebar.error("Select a GeoTIFF first.")
+        else:
+            try:
+                with MemoryFile(upload.getvalue()) as memory_file:
+                    with memory_file.open() as source:
+                        raw = source.read().astype(np.float32)
+                        if source.crs is not None:
+                            west, south, east, north = transform_bounds(
+                                source.crs, "EPSG:4326", *source.bounds, densify_pts=21
+                            )
+                            custom_query_footprint = {
+                                "polygon": [[west, south], [east, south], [east, north], [west, north], [west, south]],
+                                "longitude": (west + east) / 2.0,
+                                "latitude": (south + north) / 2.0,
+                                "bounds": (west, south, east, north),
+                                "patch_id": upload.name,
+                            }
+                        else:
+                            custom_map_note = "The uploaded GeoTIFF has no CRS/georeferencing metadata, so its spatial footprint cannot be placed on the map."
+                expected_channels = 10 if query_modality == "optical" else 2
+                if raw.shape != (expected_channels, 120, 120):
+                    raise ValueError(f"Expected shape ({expected_channels}, 120, 120), received {raw.shape}.")
+                if query_modality == "optical":
+                    raw = np.clip(raw, 0.0, 10000.0) / 10000.0
+                else:
+                    raw = (np.clip(raw, -25.0, 0.0) + 25.0) / 25.0
+                query = torch.from_numpy(raw)
+                query_id = upload.name
+                query_labels = "Unknown (custom GeoTIFF)"
+            except Exception as error:
+                st.sidebar.error(f"Cannot use this GeoTIFF: {error}")
+
+if query is not None:
+    with st.spinner("Creating 192-bit hash and searching the matching test gallery..."):
+        started = torch.cuda.Event(enable_timing=True) if device.type == "cuda" else None
+        if started:
+            ended = torch.cuda.Event(enable_timing=True)
+            started.record()
+        else:
+            import time
+            started_at = time.perf_counter()
+
+        packed_query = deterministic_hash_code(model, query, query_modality, device)
+        target_index = sar_index if target_modality == "sar" else optical_index
+        search_count = min(target_index.ntotal, top_k + int(query_modality == target_modality and query_index is not None))
+        distances, retrieved = target_index.search(packed_query, search_count)
+        retrieved = list(map(int, retrieved[0]))
+        distances = list(map(int, distances[0]))
+        if query_modality == target_modality and query_index is not None:
+            pairs = [(item, dist) for item, dist in zip(retrieved, distances) if item != query_index]
+            retrieved, distances = zip(*pairs[:top_k]) if pairs else ([], [])
+        else:
+            retrieved, distances = retrieved[:top_k], distances[:top_k]
+
+        if device.type == "cuda":
+            ended.record()
+            torch.cuda.synchronize()
+            elapsed_ms = started.elapsed_time(ended)
+        else:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+
+    st.success(f"{task} completed in {elapsed_ms:.2f} ms (end-to-end hash inference + binary search).")
+    query_column, information_column = st.columns([1, 2])
+    with query_column:
+        st.subheader("Query")
+        if query_modality == "optical":
+            st.image(optical_preview(query), clamp=True)
+        else:
+            st.image(sar_preview(query), clamp=True)
+    with information_column:
+        st.subheader("Query metadata")
+        st.write(f"**Patch ID:** {query_id}")
+        st.write(f"**Labels:** {query_labels}")
+        st.write("**Representation:** one pooled 192-bit / 24-byte image hash")
+
+    st.subheader(f"Top-{len(retrieved)} retrieved {target_modality.upper()} images")
+    columns = st.columns(max(len(retrieved), 1))
+    for rank, (match_index, distance) in enumerate(zip(retrieved, distances), start=1):
+        sar_match, optical_match = test_dataset[match_index]
+        metadata = gallery_metadata.iloc[match_index]
+        with columns[rank - 1]:
+            if target_modality == "sar":
+                st.image(sar_preview(sar_match), clamp=True)
+            else:
+                st.image(optical_preview(optical_match), clamp=True)
+            exact_pair = query_index is not None and match_index == query_index and query_modality != target_modality
+            st.markdown(f"**Rank {rank}**{' · exact paired tile' if exact_pair else ''}")
+            st.caption(f"Hamming distance: {distance}")
+            st.caption(f"Patch ID: {metadata['patch_id']}")
+            st.caption(f"Labels: {labels_to_text(metadata['labels'])}")
+
+    # Render true GeoTIFF footprints for held-out queries and for georeferenced custom uploads.
+    if retrieved and (query_index is not None or custom_query_footprint is not None):
+        st.divider()
+        st.subheader("Spatial footprints: query and all retrieved gallery tiles")
+        st.caption("Red Q is the query footprint. Markers 1–k are retrieved gallery footprints in rank order. When footprints overlap exactly, adjacent Q + rank badges and red/blue outlined regions make the overlap explicit. This map supports spatial inspection; aggregate paired-retrieval metrics remain the formal evidence.")
+        try:
+            if query_index is not None:
+                query_footprint = footprint_wgs84(test_dataset, query_index)
+                query_footprint["patch_id"] = query_id
+                query_role = "Query"
+            else:
+                query_footprint = custom_query_footprint
+                query_role = "Custom GeoTIFF query"
+            gallery_footprints = []
+            location_rows = [{
+                "marker": "Q", "role": query_role, "patch_id": query_id,
+                "latitude": query_footprint["latitude"], "longitude": query_footprint["longitude"],
+                "hamming_distance": None,
+            }]
+            for rank, (match_index, distance) in enumerate(zip(retrieved, distances), start=1):
+                footprint = footprint_wgs84(test_dataset, match_index)
+                footprint["patch_id"] = test_dataset.patch_ids[match_index]
+                footprint["hamming_distance"] = distance
+                gallery_footprints.append(footprint)
+                location_rows.append({
+                    "marker": str(rank), "role": "Exact paired tile" if query_index is not None and match_index == query_index else "Retrieved gallery tile",
+                    "patch_id": footprint["patch_id"], "latitude": footprint["latitude"],
+                    "longitude": footprint["longitude"], "hamming_distance": distance,
+                })
+            components.html(combined_footprint_map(query_footprint, gallery_footprints), height=520, scrolling=False)
+            st.dataframe(pd.DataFrame(location_rows), use_container_width=True, hide_index=True)
+        except Exception as error:
+            st.warning(f"Combined footprint map could not be rendered: {error}")
+    elif retrieved and custom_map_note:
+        st.info(custom_map_note)
+else:
+    st.info("Choose a query image in the sidebar, then run retrieval.")

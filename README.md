@@ -1,5 +1,29 @@
 ##### **🛰️ Antariksh-JEPA: A Noise-Robust Predictive Hashing Engine for Cross-Modal RS Image Retrieval**
 
+> **Publication experiment and deployment update:** The local `Web_app/app.py` uses the contrastive publication checkpoint and its matching held-out test indexes. Instructions further below describing `saved_models/antariksh_best_model.pth` refer to the older prototype, not the contrastive model. The following update supersedes those deployment instructions.
+
+### Contrastive retrieval app
+
+The app loads `publication_runs_contrastive/best_checkpoint.pt` and the matching binary FAISS indexes and gallery metadata from the [Hugging Face model repository](https://huggingface.co/ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model/tree/main/publication_runs_contrastive). The [dataset repository](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/tree/main) contains `metadata.parquet` and a 3.14 GB ZIP. On first startup the app downloads the ZIP into the Hugging Face cache and extracts only held-out test TIFFs to the app server's disk; later queries read those files from disk. Startup requires free disk space for both ZIP and extracted tiles and may repeat after a cloud restart or cache reset. When the app runs in Streamlit Cloud this storage is on the server, not the browser user's computer. Running the app locally instead uses the local computer's disk. Only use trusted checkpoint, pickle and dataset artifacts.
+
+Install dependencies with `pip install -r requirements.txt` and run `streamlit run Web_app/app.py`. For a local dataset, set both `ANTARIKSH_DATA_DIR` (the directory containing `BigEarthNet-S1` and `BigEarthNet-S2`) and `ANTARIKSH_PARQUET_FILE` (the metadata file). Optionally set `ANTARIKSH_RUN_DIR` to the matching contrastive run folder. `ANTARIKSH_MODEL_REVISION` and `ANTARIKSH_DATASET_REVISION` can pin Hugging Face revisions; the model defaults to the observed bundle commit and the dataset defaults to `main`.
+
+`ANTARIKSH_TEST_CACHE_DIR` optionally changes the extracted-tile cache root. The Hugging Face cache location can be configured separately using `HF_HOME`. Do not commit the archive or extracted images to GitHub.
+
+The two indexes, checkpoint, gallery metadata and underlying test images must come from the same evaluation run. The app verifies gallery counts and patch ID ordering; it does not establish that files or model weights are identical to those used in evaluation. A 192-bit hash occupies 24 bytes before index and metadata overhead. Semantic label overlap and exact paired retrieval measure different outcomes.
+
+### Publication experiment figures
+
+The public `notebooks/Master-Pipeline.ipynb` has saved outputs cleared and local Windows paths replaced with `CHANGE_ME_DATA_DIR` and `CHANGE_ME_RUNS_PARENT`. Set these placeholders to your dataset and experiment-output locations before running the affected cells. The original local notebook is unchanged.
+
+The following figures are from the locally reported contrastive experiment; they are not proof of performance on other datasets.
+
+- [Dataset and preprocessing](assets/publication/figure_2_dataset_preprocessing.png)
+- [Training and retrieval architecture](assets/publication/figure_3_proposed_methodology_clean.png)
+- [Training and validation loss](assets/publication/figure_4_training_validation_loss.png)
+- [Baseline versus contrastive retrieval](assets/publication/figure_5_original_vs_contrastive_cross_modal.png)
+- [Qualitative retrieval examples](assets/publication/figure_6_qualitative_retrieval_examples.png)
+
 
 
 
@@ -98,7 +122,7 @@ Due to size constraints, the dataset and model weights are hosted on Hugging Fac
 
 * **Automated Setup (Recommended):**
 
-&#x20; Simply run the `Streamlit` app. The code will automatically download the 3.1GB dataset and the `.pth` model file to their correct directories.
+&#x20; Run the `Streamlit` app. The contrastive checkpoint, indexes and dataset ZIP are downloaded to the app server, and the test tiles are cached on its disk.
 
 
 
@@ -106,7 +130,7 @@ Due to size constraints, the dataset and model weights are hosted on Hugging Fac
 
   * **Dataset:** Download `BigEarthNet_14K.zip` from [this Hugging Face link](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/BigEarthNet_14K.zip) and place it in the `archive/` directory.
   * **Metadata:** Download `metadata.parquet` from [here](https://huggingface.co/datasets/ranjeetgupta/Cross-Modal_Retrieval_BigEarthNet_14K_S1_and_S2/resolve/main/metadata.parquet) and place it in the `archive/BEN_14k/` folder.
-  * **Model**: Download `antariksh_best_model.pth` from [this Hugging Face link](https://huggingface.co/ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model/resolve/main/saved_models/antariksh_best_model.pth) and place it in the `saved_models/` folder.
+  * **Model and indexes:** Use the matching [contrastive checkpoint and index bundle](https://huggingface.co/ranjeetgupta/Cross-Modal_Antriksh_X-JEPA_model/tree/main/publication_runs_contrastive); configure `ANTARIKSH_RUN_DIR` for a local copy.
 
 
 

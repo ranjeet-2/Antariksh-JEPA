@@ -2,6 +2,7 @@ torch
 torchvision
 numpy
 pandas
+pyarrow
 faiss-cpu
 rasterio
 streamlit

@@ -9,6 +9,8 @@ temp_upload.tif
 # 2. Model Weights (Hosted on Hugging Face)
 # ===================================================
 saved_models/
+notebooks/publication_runs/
+notebooks/publication_runs_contrastive/
 
 # ==================================================
 # 3. Jupyter Checkpoints
